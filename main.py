@@ -17,7 +17,9 @@ from opencv.visualization import draw_industrial_overlay
 from reports.qr_generator import generate_qr_report
 from utils.config_loader import ensure_runtime_dirs, load_config
 from utils.tracker import DefectTracker
+from yolo.combined_detector import CombinedDetector
 from yolo.detector import YoloDetector
+from yolo.roboflow_detector import RoboflowDetector
 
 
 class KnitXRuntime:
@@ -48,7 +50,10 @@ class KnitXRuntime:
             }
         )
 
-        self.detector = YoloDetector(
+        provider = str(config["model"].get("provider", "local"))
+        merge_iou = float(config["model"].get("merge_iou_threshold", 0.5))
+
+        local_detector = YoloDetector(
             model_path=config["model"]["path"],
             confidence=float(config["model"]["confidence"]),
             image_size=int(config["model"]["image_size"]),
@@ -56,6 +61,34 @@ class KnitXRuntime:
             class_names=config["model"]["class_names"],
             class_remap=config["class_remap"],
         )
+
+        if provider == "local":
+            self.detector = local_detector
+        elif provider == "roboflow":
+            rf_config = config["model"].get("roboflow", {})
+            self.detector = RoboflowDetector(
+                api_key=str(rf_config.get("api_key", "")),
+                model_id=str(rf_config.get("model_id", "")),
+                confidence=float(rf_config.get("confidence", config["model"]["confidence"])),
+                api_url=str(rf_config.get("api_url", "https://detect.roboflow.com")),
+                class_remap=config["class_remap"],
+            )
+        elif provider == "both":
+            rf_config = config["model"].get("roboflow", {})
+            roboflow_detector = RoboflowDetector(
+                api_key=str(rf_config.get("api_key", "")),
+                model_id=str(rf_config.get("model_id", "")),
+                confidence=float(rf_config.get("confidence", config["model"]["confidence"])),
+                api_url=str(rf_config.get("api_url", "https://detect.roboflow.com")),
+                class_remap=config["class_remap"],
+            )
+            self.detector = CombinedDetector(
+                detectors=[local_detector, roboflow_detector],
+                merge_iou_threshold=merge_iou,
+                same_class_only=True,
+            )
+        else:
+            raise ValueError(f"Unknown model provider: {provider}")
         self.reset_tracker()
 
         self.total_defects = 0
@@ -333,6 +366,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", help="Image file, image folder, or video file")
     parser.add_argument("--camera-index", type=int, help="Webcam/Pi camera index")
     parser.add_argument("--model", help="YOLO .pt model path")
+    parser.add_argument("--model-provider", choices=["local", "roboflow", "both"], help="Model inference provider")
+    parser.add_argument("--roboflow-api-key", help="Roboflow API key")
+    parser.add_argument("--roboflow-model-id", help="Roboflow model ID (e.g. workspace/project/version)")
+    parser.add_argument("--roboflow-conf", type=float, help="Roboflow inference confidence threshold")
+    parser.add_argument("--merge-iou", type=float, help="IoU threshold for merging local + roboflow detections")
     parser.add_argument("--roll", help="Roll ID")
     parser.add_argument("--gsm", type=float, help="Fabric GSM")
     parser.add_argument("--roll-weight", type=float, help="Roll weight in kg")
@@ -362,6 +400,16 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["runtime"]["camera_index"] = args.camera_index
     if args.model:
         config["model"]["path"] = str(Path(args.model).resolve())
+    if args.model_provider:
+        config["model"]["provider"] = args.model_provider
+    if args.roboflow_api_key:
+        config["model"].setdefault("roboflow", {})["api_key"] = args.roboflow_api_key
+    if args.roboflow_model_id:
+        config["model"].setdefault("roboflow", {})["model_id"] = args.roboflow_model_id
+    if args.roboflow_conf is not None:
+        config["model"].setdefault("roboflow", {})["confidence"] = args.roboflow_conf
+    if args.merge_iou is not None:
+        config["model"]["merge_iou_threshold"] = args.merge_iou
     if args.roll:
         config["inspection"]["roll_id"] = args.roll
     if args.gsm is not None:

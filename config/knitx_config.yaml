@@ -3,6 +3,7 @@
   environment: development
 
 model:
+  provider: both  # "local", "roboflow", or "both"
   path: models/knitx_best.pt
   confidence: 0.25
   image_size: 640
@@ -11,6 +12,12 @@ model:
     0: stain_or_spots
     1: needle_line
     2: holes
+  merge_iou_threshold: 0.5
+  roboflow:
+    api_url: https://detect.roboflow.com
+    api_key: S61AJId7FyAGpf9GRyWc
+    model_id: dakshinamurthy-s/knitx-wbyfu/1
+    confidence: 0.25
 
 class_remap:
   enabled: true
